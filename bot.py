@@ -2,11 +2,11 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import requests
+import sys
 
 TELEGRAM_TOKEN = "8937330320:AAFW6IwsZbE8yMidb2Eg397JKZytJ-LvT2o"
 CHAT_IDS = ["7312827776", "449591109"]
 SYMBOL = "SOL-USD"
-LEVERAGE = 20
 
 def send_telegram(msg):
     for chat_id in CHAT_IDS:
@@ -15,9 +15,16 @@ def send_telegram(msg):
             requests.post(url, data={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=15)
         except: pass
 
-def check_market():
+try:
+    print("Downloading data...")
     df = yf.download(tickers=SYMBOL, period="30d", interval="1h", progress=False)
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    
+    if df.empty:
+        print("Error: Data is empty")
+        sys.exit(1)
+
+    if isinstance(df.columns, pd.MultiIndex): 
+        df.columns = df.columns.get_level_values(0)
     df.columns = [c.lower() for c in df.columns]
     
     df['ema200'] = ta.ema(df['close'], length=200)
@@ -29,42 +36,20 @@ def check_market():
     
     last = df.iloc[-1]
     price = last['close']
-    ema = last['ema200']
-    status = "🟢 صعودی (بالای EMA200)" if price > ema else "🔴 نزولی (زیر EMA200)"
     
-    # ۱. همیشه قیمت رو گزارش کن
-    report_msg = (
-        f"📊 *گزارش قیمت بازار*\n"
-        f"────────────────\n"
-        f"💎 ارز: SOL/USDT\n"
-        f"💵 قیمت لحظه‌ای: *${price:.2f}*\n"
-        f"📈 روند کلی: {status}\n"
-        f"────────────────"
-    )
-    send_telegram(report_msg)
-    
-    # ۲. بررسی سیگنال ۶۵۲٪
+    # گزارش قیمت
+    status = "🟢 Up" if price > last['ema200'] else "🔴 Down"
+    send_telegram(f"📊 SOL Report\nPrice: ${price:.2f}\nTrend: {status}")
+    print("Report sent.")
+
+    # بررسی سیگنال
     vol_ok = last['volume'] > (last['vma'] * 1.2)
     adx_ok = last['adx'] > 25
-    l_cond = (price > ema) and (price > last['dh']) and adx_ok and vol_ok
-    s_cond = (price < ema) and (price < last['dl']) and adx_ok and vol_ok
-    
-    if l_cond or s_cond:
-        side = "🟢 LONG (خرید)" if l_cond else "🔴 SHORT (فروش)"
-        atr = last['atr']
-        sl = (price - (atr * 2)) if l_cond else (price + (atr * 2))
-        tp1 = (price + (atr * 3)) if l_cond else (price - (atr * 3))
-        
-        signal_msg = (
-            f"🚨 *سیگنال معامله جدید (منطق ۶۵۲٪)*\n"
-            f"────────────────\n"
-            f"⚡️ پوزیشن: {side}\n"
-            f"📌 *قیمت دقیق ورود:* *${price:.2f}*\n"
-            f"🎯 *اهرم:* {LEVERAGE}x\n"
-            f"🛑 *استاپ (SL):* ${sl:.2f}\n"
-            f"🎯 *هدف (TP):* ${tp1:.2f}\n"
-            f"────────────────"
-        )
-        send_telegram(signal_msg)
+    if (price > last['ema200']) and (price > last['dh']) and adx_ok and vol_ok:
+        send_telegram(f"🚨 SIGNAL: LONG SOL at ${price:.2f}")
+    elif (price < last['ema200']) and (price < last['dl']) and adx_ok and vol_ok:
+        send_telegram(f"🚨 SIGNAL: SHORT SOL at ${price:.2f}")
 
-check_market()
+except Exception as e:
+    print(f"Final Error: {e}")
+    sys.exit(1)
