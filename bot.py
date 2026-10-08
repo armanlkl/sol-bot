@@ -4,9 +4,11 @@ import numpy as np
 import requests
 import sys
 
+# تنظیمات تلگرام
 TELEGRAM_TOKEN = "8937330320:AAFW6IwsZbE8yMidb2Eg397JKZytJ-LvT2o"
 CHAT_IDS = ["7312827776", "449591109"]
 SYMBOL = "SOL-USD"
+LEVERAGE = 20
 
 def send_telegram(msg):
     for chat_id in CHAT_IDS:
@@ -24,50 +26,78 @@ try:
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     df.columns = [c.lower() for c in df.columns]
 
-    # --- محاسبات دستی اندیکاتورها ---
-    # EMA 200
+    # --- محاسبات دستی ---
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-    
-    # Donchian Channels
     df['dh'] = df['high'].shift(1).rolling(20).max()
     df['dl'] = df['low'].shift(1).rolling(20).min()
     
-    # ATR 14
-    high_low = df['high'] - df['low']
-    high_cp = np.abs(df['high'] - df['close'].shift())
-    low_cp = np.abs(df['low'] - df['close'].shift())
-    df['tr'] = np.max([high_low, high_cp, low_cp], axis=0)
-    df['atr'] = df['tr'].rolling(14).mean()
+    df['tr'] = np.maximum(df['high'] - df['low'], 
+                          np.maximum(abs(df['high'] - df['close'].shift(1)), 
+                                     abs(df['low'] - df['close'].shift(1))))
+    df['atr'] = df['tr'].rolling(window=14).mean()
     
-    # ADX 14 (ساده شده)
-    plus_dm = df['high'].diff()
-    minus_dm = df['low'].diff()
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm > 0] = 0
-    tr14 = df['tr'].rolling(14).sum()
-    plus_di = 100 * (plus_dm.rolling(14).sum() / tr14)
-    minus_di = 100 * (np.abs(minus_dm.rolling(14).sum()) / tr14)
-    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-    df['adx'] = dx.rolling(14).mean()
-
-    # فیلتر حجم
+    up = df['high'].diff(); down = -df['low'].diff()
+    plus_dm = np.where((up > down) & (up > 0), up, 0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0)
+    tr_sum = df['tr'].rolling(window=14).sum()
+    plus_di = 100 * (pd.Series(plus_dm).rolling(window=14).sum() / tr_sum)
+    minus_di = 100 * (pd.Series(minus_dm).rolling(window=14).sum() / tr_sum)
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    df['adx'] = dx.rolling(window=14).mean()
     vma = df['volume'].rolling(20).mean()
-    
+
     last = df.iloc[-1]
     price = float(last['close'])
     
-    # گزارش قیمت
-    status = "🟢 Up" if price > last['ema200'] else "🔴 Down"
-    send_telegram(f"📊 SOL Report\nPrice: `${price:.2f}`\nTrend: {status}")
+    # --- گزارش فارسی ۱۵ دقیقه‌ای ---
+    status_icon = "🟢" if price > last['ema200'] else "🔴"
+    status_text = "صعودی (بالای EMA200)" if price > last['ema200'] else "نزولی (زیر EMA200)"
+    
+    report_msg = (
+        f"📊 *گزارش قیمت بازار*\n"
+        f"────────────────\n"
+        f"💎 ارز: SOL/USDT\n"
+        f"💵 قیمت لحظه‌ای: *${price:.2f}*\n"
+        f"📈 روند کلی: {status_icon} {status_text}\n"
+        f"────────────────"
+    )
+    send_telegram(report_msg)
 
-    # بررسی سیگنال
+    # --- بررسی سیگنال ۶۵۲٪ ---
     vol_ok = last['volume'] > (vma.iloc[-1] * 1.2)
     adx_ok = last['adx'] > 25
     
     if (price > last['ema200']) and (price > last['dh']) and adx_ok and vol_ok:
-        send_telegram(f"🚨 SIGNAL: LONG SOL at `${price:.2f}`")
+        side = "🟢 LONG (خرید)"
+        sl = price - (last['atr'] * 2)
+        tp = price + (last['atr'] * 3)
+        signal_msg = (
+            f"🚨 *سیگنال معامله جدید (Logic 652%)*\n"
+            f"────────────────\n"
+            f"⚡️ پوزیشن: {side}\n"
+            f"📌 *قیمت ورود:* *${price:.2f}*\n"
+            f"🎯 *اهرم:* {LEVERAGE}x\n"
+            f"🛑 *حد ضرر:* ${sl:.2f}\n"
+            f"🎯 *تارگت:* ${tp:.2f}\n"
+            f"────────────────"
+        )
+        send_telegram(signal_msg)
+        
     elif (price < last['ema200']) and (price < last['dl']) and adx_ok and vol_ok:
-        send_telegram(f"🚨 SIGNAL: SHORT SOL at `${price:.2f}`")
+        side = "🔴 SHORT (فروش)"
+        sl = price + (last['atr'] * 2)
+        tp = price - (last['atr'] * 3)
+        signal_msg = (
+            f"🚨 *سیگنال معامله جدید (Logic 652%)*\n"
+            f"────────────────\n"
+            f"⚡️ پوزیشن: {side}\n"
+            f"📌 *قیمت ورود:* *${price:.2f}*\n"
+            f"🎯 *اهرم:* {LEVERAGE}x\n"
+            f"🛑 *حد ضرر:* ${sl:.2f}\n"
+            f"🎯 *تارگت:* ${tp:.2f}\n"
+            f"────────────────"
+        )
+        send_telegram(signal_msg)
 
 except Exception as e:
     print(f"Error: {e}")
